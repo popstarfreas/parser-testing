@@ -1,0 +1,16 @@
+{
+  "name": "csharptotypescript",
+  "version": "0.1.0",
+  "namespace": true,
+  "suffix": ".bs.js",
+  "package-specs": {
+      "module": "commonjs",
+      "in-source": false
+  },
+  "sources": {
+    "dir" : "src",
+    "subdirs" : true
+  },
+  "bs-dependencies": [
+  ]
+}

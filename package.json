@@ -1,0 +1,15 @@
+{
+  "name": "csharptotypescript",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "watch": "bsb -make-world -w",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bs-platform": "^9.0.1"
+  }
+}
