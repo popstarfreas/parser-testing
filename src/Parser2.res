@@ -6,7 +6,7 @@ if (WorldGen.destroyObject && false || true)
         let y: int = j - (world.getTile({ x: i, y: j }).frameY / 18) as int;
         let fX: int = world.getTile({ x: i, y: j }).frameX as int;
         let fX2: int = 0;
-        let a: string = "hello";
+        let a: string = "hello";`/*
         while (fX >= 5000)
         {
             fX -= 5000;
@@ -23,7 +23,7 @@ if (WorldGen.destroyObject && false || true)
                     WorldGen.KillTile(x, y + f2, false, false, false);
                 }
             }
-`
+`*/
 
 let isNumeric = character => {
     switch character {
@@ -256,20 +256,16 @@ type parserState =
     | IfExpressionStack(list<expressionPart>)*/
 
 type rec secondLevelToken =
-    | If(list<parsedToken>, list<parsedToken>)
+    | IfExpression(list<parsedToken>)
     | Statement(list<parsedToken>)
     | Block(list<secondLevelToken>)
 
 type nestedBracketCount = int
 
 type parserState =
-    | ParsingTopLevel(list<parsedToken>)
-    | ParsingIfBody(list<parsedToken>)
-    | ParsingBlock(list<parsedToken>)
+    | ParsingBlock(list<secondLevelToken>)
 
 let parserStateToString = (parserState) => switch parserState {
-    | ParsingTopLevel(_) => "ParsingTopLevel"
-    | ParsingIfBody(_) => "ParsingIfBody"
     | ParsingBlock(_) => "ParsingBlock"
 }
 
@@ -293,7 +289,7 @@ let rec parseIfExpression = (~state: ifParserState, ~expressionTokens: list<pars
             | (ParsingIfNoBracketYet, OpenBracket) => parseIfExpression(~state=ParsingIf(0), ~expressionTokens=otherTokens, ~tokenBuffer)
             | (ParsingIf(nestedBracketCount), OpenBracket) => parseIfExpression(~state=ParsingIf(nestedBracketCount+1), ~expressionTokens=otherTokens, ~tokenBuffer=list{currentToken, ...tokenBuffer})
             | (ParsingIf(0), CloseBracket) => Some({
-                tokens: tokenBuffer,
+                tokens: tokenBuffer->Belt.List.reverse,
                 restOfTokens: otherTokens,
             })
             | (ParsingIf(nestedBracketCount), CloseBracket) => parseIfExpression(~state=ParsingIf(nestedBracketCount-1), ~expressionTokens=otherTokens, ~tokenBuffer)
@@ -307,28 +303,113 @@ let rec parseIfExpression = (~state: ifParserState, ~expressionTokens: list<pars
     }
 }
 
-let parseExpressionTokens = (expressionTokens: list<parsedToken>): option<unit> => {
+type statementParserState =
+    | ParsingStatement(nestedBracketCount)
+    | ParsingStatementOpenBrace(nestedBracketCount)
+
+let statementParserStateToString = (statementParserState) => switch statementParserState {
+    | ParsingStatement(nestedBracketCount) => `ParsingStatement(${nestedBracketCount->Belt.Int.toString})`
+    | ParsingStatementOpenBrace(nestedBracketCount) => `ParsingStatementOpenBrace(${nestedBracketCount->Belt.Int.toString})`
+}
+
+type parseStatementResult = {
+    tokens: list<parsedToken>,
+    restOfTokens: list<parsedToken>,
+}
+
+let rec parseStatement = (~state: statementParserState, ~expressionTokens: list<parsedToken>, ~tokenBuffer: list<parsedToken>) => {
+    switch expressionTokens {
+        | list{currentToken, ...otherTokens} => switch (state, currentToken) {
+            | (ParsingStatement(nestedBracketCount), OpenBracket) => parseStatement(~state=ParsingStatement(nestedBracketCount+1), ~expressionTokens=otherTokens, ~tokenBuffer=list{OpenBracket, ...tokenBuffer})
+            | (ParsingStatement(nestedBracketCount), CloseBracket) => parseStatement(~state=ParsingStatement(nestedBracketCount-1), ~expressionTokens=otherTokens, ~tokenBuffer=list{OpenBracket, ...tokenBuffer})
+            | (ParsingStatement(nestedBracketCount), OpenBrace) => parseStatement(~state=ParsingStatementOpenBrace(nestedBracketCount), ~expressionTokens=otherTokens, ~tokenBuffer=list{OpenBrace, ...tokenBuffer})
+            | (ParsingStatementOpenBrace(nestedBracketCount), Colon)
+            | (ParsingStatementOpenBrace(nestedBracketCount), Comma)
+            | (ParsingStatementOpenBrace(nestedBracketCount), Word(_)) => parseStatement(~state=ParsingStatementOpenBrace(nestedBracketCount), ~expressionTokens=otherTokens, ~tokenBuffer=list{currentToken, ...tokenBuffer})
+            | (ParsingStatementOpenBrace(nestedBracketCount), CloseBrace) => parseStatement(~state=ParsingStatement(nestedBracketCount), ~expressionTokens=otherTokens, ~tokenBuffer=list{CloseBrace, ...tokenBuffer})
+            | (ParsingStatement(nestedBracketCount), Colon)
+            | (ParsingStatement(nestedBracketCount), Operator(_))
+            | (ParsingStatement(nestedBracketCount), Dot)
+            | (ParsingStatement(nestedBracketCount), Number(_))
+            | (ParsingStatement(nestedBracketCount), String(_))
+            | (ParsingStatement(nestedBracketCount), Word(_)) => parseStatement(~state=ParsingStatement(nestedBracketCount), ~expressionTokens=otherTokens, ~tokenBuffer=list{currentToken, ...tokenBuffer})
+            | (ParsingStatement(0), Semicolon) => Some({
+                tokens: tokenBuffer,
+                restOfTokens: otherTokens,
+            })
+            | _ => {
+                Js.log3(statementParserStateToString(state), "- Unexpected token:", parsedTokenToString(. currentToken))
+                None
+            }
+        }
+        | list{} =>  None
+    }
+}
+
+type parseBlockResult = {
+    tokens: list<secondLevelToken>,
+}
+
+let parseExpressionTokens = (expressionTokens: list<parsedToken>): option<parseBlockResult> => {
     let rec innerParseExpressionTokens = (~state: parserState, ~expressionTokens: list<parsedToken>, ~stack: list<parserState>, ~tokenBuffer: list<parsedToken>) => {
         switch expressionTokens {
             | list{currentToken, ...otherTokens} => switch (state, currentToken) {
-                | (ParsingTopLevel(_), Word("if")) => innerParseExpressionTokens(~state=ParsingTopLevel)
-                | (ParsingIfNoBracketYet, OpenBracket) => innerParseExpressionTokens(~state=ParsingIf(0), ~expressionTokens=otherTokens, ~stack, ~tokenBuffer)
-                | (ParsingIf(nestedBracketCount), OpenBracket) => innerParseExpressionTokens(~state=ParsingIf(nestedBracketCount+1), ~expressionTokens=otherTokens, ~stack, ~tokenBuffer=list{currentToken, ...tokenBuffer})
-                | (ParsingIf(0), CloseBracket) => innerParseExpressionTokens(~state=ParsingIfBody(tokenBuffer->Belt.List.reverse), ~expressionTokens=otherTokens, ~stack, ~tokenBuffer=list{})
-                | (ParsingIf(nestedBracketCount), CloseBracket) => innerParseExpressionTokens(~state=ParsingIf(nestedBracketCount-1), ~expressionTokens=otherTokens, ~stack, ~tokenBuffer)
-                | (ParsingIf(_), _) => innerParseExpressionTokens(~state, ~expressionTokens=otherTokens, ~stack, ~tokenBuffer)
-                | (ParsingIfBody(_), OpenBrace) => innerParseExpressionTokens(~state=ParsingBlock(list{}), ~expressionTokens=otherTokens, ~stack=list{state, ...stack}, ~tokenBuffer)
-                | (ParsingIfBody(_), Semicolon) => innerParseExpressionTokens(~state=ParsingBlock(list{}), ~expressionTokens=otherTokens, ~stack=list{state, ...stack}, ~tokenBuffer)
+                | (ParsingBlock(blockTokens), Word("if")) => {
+                    if tokenBuffer->Belt.List.length > 0 {
+                        Js.log2(parserStateToString(state), "- Unexpected filled token buffer")
+                        None
+                    } else {
+                        switch parseIfExpression(~state=ParsingIfNoBracketYet, ~expressionTokens=otherTokens, ~tokenBuffer=list{}) {
+                            | Some({ tokens, restOfTokens }) => innerParseExpressionTokens(~state=ParsingBlock(list{IfExpression(tokens), ...blockTokens}), ~expressionTokens=restOfTokens, ~stack, ~tokenBuffer)
+                            | None => None
+                        }
+                    }
+                }
+                | (ParsingBlock(_), OpenBrace) => innerParseExpressionTokens(~state=ParsingBlock(list{}), ~expressionTokens=otherTokens, ~stack=list{state, ...stack}, ~tokenBuffer=list{})
+                | (ParsingBlock(blockTokens), Word(_)) => {
+                    if tokenBuffer->Belt.List.length > 0 {
+                        Js.log2(parserStateToString(state), "- Unexpected filled token buffer")
+                        None
+                    } else {
+                        switch parseStatement(~state=ParsingStatement(0), ~expressionTokens=list{currentToken, ...otherTokens}, ~tokenBuffer=list{}) {
+                            | Some({ tokens, restOfTokens }) => innerParseExpressionTokens(~state=ParsingBlock(list{Statement(tokens), ...blockTokens}), ~expressionTokens=restOfTokens, ~stack, ~tokenBuffer)
+                            | None => None
+                        }
+                    }
+                }
+                | (ParsingBlock(blockTokens), CloseBrace) => {
+                    if tokenBuffer->Belt.List.length > 0 {
+                        Js.log2(parserStateToString(state), "- Unexpected filled token buffer")
+                        None
+                    } else {
+                        let newState = switch stack->Belt.List.headExn {
+                            | ParsingBlock(tokens) => ParsingBlock(list{Block(blockTokens), ...tokens})
+                        }
+                        innerParseExpressionTokens(~state=newState, ~expressionTokens=otherTokens, ~stack=stack->Belt.List.tailExn, ~tokenBuffer)
+                    }
+                }
                 | _ => {
                     Js.log3(parserStateToString(state), "- Unexpected token:", parsedTokenToString(. currentToken))
                     None
                 }
             }
-            | list{} =>  None
+            | list{} =>  {
+                Js.log("End of tokens")
+                switch (state, stack->Belt.List.length) {
+                    | (ParsingBlock(blockTokens), 0) => Some({
+                        tokens: blockTokens->Belt.List.reverse
+                    })
+                    | _ => None
+                }
+            }
         }
     }
 
-    innerParseExpressionTokens(~state=ParsingTopLevel(list{}), ~expressionTokens, ~stack=list{}, ~tokenBuffer=list{})
+    innerParseExpressionTokens(~state=ParsingBlock(list{}), ~expressionTokens, ~stack=list{}, ~tokenBuffer=list{})
 }
 
-parseExpressionTokens(parsed)->ignore
+(parseExpressionTokens(parsed)->Belt.Option.getUnsafe).tokens->Belt.List.toArray->Js.Array2.map((token) => switch token {
+    | IfExpression(_) => "If"
+    | Statement(_) => "Statement"
+    | Block(_) => "Block"
+})->Js.Array2.joinWith("\n")->Js.log
