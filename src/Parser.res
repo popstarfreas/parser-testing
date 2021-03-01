@@ -225,32 +225,39 @@ let strToTokenList = (codeStr) => {
 }
 
 type expressionState =
-    | ExpressionStart(option<string>)
-    | ExpectingWord
-    | ProcessingWordOrExpression
-    | WaitingTerminateWord
+    | ExpressionStart(option<list<string>>)
+    | ExpectingWord(option<list<string>>)
+    | ProcessingWordOrExpression(option<list<string>>)
+    | WaitingTerminateWord(option<list<string>>)
     | WaitingTerminateString
-    | WaitingTerminateArgument
-    | WaitingTerminateNumberArgument
-    | WaitingTerminateNumber
+    | WaitingTerminateNumber(option<list<string>>)
     | ExpectingCloseBracketOrExpression
     | ExpectingCloseBracketOrFunctionArguments
     | WaitingOperation
-    | ExpectingExpressionEndOrOperator(option<string>)
+    | ExpectingExpressionEndOrOperator(option<list<string>>)
 
 let expressionStateToString = state => switch state {
-    | ExpressionStart(_)
-    | ExpectingWord => "ExpectingWord"
-    | ProcessingWordOrExpression => "ProcessingWordOrExpression"
-    | WaitingTerminateWord => "WaitingTerminateWord"
+    | ExpressionStart(_) => "ExpressionStart"
+    | ExpectingWord(_) => "ExpectingWord"
+    | ProcessingWordOrExpression(_) => "ProcessingWordOrExpression"
+    | WaitingTerminateWord(_) => "WaitingTerminateWord"
     | WaitingTerminateString =>"WaitingTerminateString"
-    | WaitingTerminateArgument=> "WaitingTerminateArgument"
-    | WaitingTerminateNumberArgument=> "WaitingTerminateNumberArgument"
-    | WaitingTerminateNumber=> "WaitingTerminateNumber"
+    | WaitingTerminateNumber(_) => "WaitingTerminateNumber"
     | ExpectingCloseBracketOrExpression=> "ExpectingCloseBracketOrExpression"
     | ExpectingCloseBracketOrFunctionArguments=> "ExpectingCloseBracketOrFunctionArguments"
     | WaitingOperation => "WaitingOperation"
     | ExpectingExpressionEndOrOperator(_) => "ExpectingExpressionEndOrOperator"
+}
+
+let isTerminatingCharacter = (terminationList, character) => {
+    Js.log3("isTerminatingCharacter", terminationList, character)
+    let result = terminationList
+        ->Belt.Option.mapWithDefaultU(list{}, (.terminationToken) => terminationToken)
+        ->Belt.List.someU((. terminationToken) => {
+            character === terminationToken
+        })
+    Js.log(result)
+    result
 }
 
 let isOperator = character => switch character {
@@ -270,17 +277,14 @@ type rec parsedToken =
     | String(string)
     | Number(int)
     | Function(string)
-    | Argument(string)
-    | LastArgument(string)
-    | NumberArgument(int)
-    | LastNumberArgument(int)
+    | Comma
 
 type parsedExpressionResult = {
     tokens: list<parsedToken>,
     remainingCode: list<string>,
 }
 
-let parseExpression = (buffer: string, code: list<string>, terminatingToken: option<string>) => {
+let parseExpression = (buffer: string, code: list<string>, finalTerminatingTokens: option<list<string>>) => {
     let rec innerParseExpression = (
         ~buffer: string,
         ~code: list<string>,
@@ -288,85 +292,104 @@ let parseExpression = (buffer: string, code: list<string>, terminatingToken: opt
         ~stack: list<expressionState>, 
         ~parsedTokens: list<parsedToken>,
     ): option<parsedExpressionResult> => {
+        Js.log2(state->expressionStateToString, code->Belt.List.length)
         switch code {
             | list{head, ...tail} => switch (state, buffer, head) {
-                | (ExpressionStart(terminatingToken), "", "(") when terminatingToken !== Some("(") => {
+                | (ExpressionStart(terminatingTokens), "", "(") when !isTerminatingCharacter(terminatingTokens, "(") => {
                     Js.log("OPENBRACKET")
-                    innerParseExpression(~buffer="", ~code=tail, ~state=ExpectingCloseBracketOrExpression, ~stack=list{ExpectingExpressionEndOrOperator(terminatingToken), ...stack}, ~parsedTokens=list{OpenBracket, ...parsedTokens})
+                    innerParseExpression(~buffer="", ~code=tail, ~state=ExpectingCloseBracketOrExpression, ~stack=list{ExpectingExpressionEndOrOperator(terminatingTokens), ...stack}, ~parsedTokens=list{OpenBracket, ...parsedTokens})
                 }
-                | (ExpressionStart(terminatingToken), "", character) when terminatingToken !== Some(character) && isAlphabetical(character) => {
-                    innerParseExpression(~buffer=character, ~code=tail, ~state=WaitingTerminateWord, ~stack=list{ExpectingExpressionEndOrOperator(terminatingToken), ...stack}, ~parsedTokens)
+                | (ExpressionStart(terminatingTokens), "", character) when !isTerminatingCharacter(terminatingTokens, character) && isAlphabetical(character) => {
+                    innerParseExpression(~buffer=character, ~code=tail, ~state=WaitingTerminateWord(terminatingTokens), ~stack=list{ExpectingExpressionEndOrOperator(terminatingTokens), ...stack}, ~parsedTokens)
                 }
-                | (ExpressionStart(terminatingToken), "", "\"") when terminatingToken !== Some("\"") => {
-                    innerParseExpression(~buffer="", ~code=tail, ~state=WaitingTerminateString, ~stack=list{ExpectingExpressionEndOrOperator(terminatingToken), ...stack}, ~parsedTokens)
+                | (ExpressionStart(terminatingTokens), "", character) when !isTerminatingCharacter(terminatingTokens, character) && isNumeric(character) => {
+                    innerParseExpression(~buffer=character, ~code=tail, ~state=WaitingTerminateNumber(terminatingTokens), ~stack=list{ExpectingExpressionEndOrOperator(terminatingTokens), ...stack}, ~parsedTokens)
                 }
-                | (ProcessingWordOrExpression, "", "(") => {
+                | (ExpressionStart(terminatingTokens), "", "\"") when !isTerminatingCharacter(terminatingTokens, "\"") => {
+                    innerParseExpression(~buffer="", ~code=tail, ~state=WaitingTerminateString, ~stack=list{ExpectingExpressionEndOrOperator(terminatingTokens), ...stack}, ~parsedTokens)
+                }
+                | (ProcessingWordOrExpression(terminatingTokens), "", "(") => {
                     Js.log("OPENBRACKET")
                     innerParseExpression(~buffer="", ~code=tail, ~state=ExpectingCloseBracketOrExpression, ~stack, ~parsedTokens=list{OpenBracket, ...parsedTokens})
                 }
-                | (ExpectingCloseBracketOrExpression | ProcessingWordOrExpression, "", " ") => innerParseExpression(~buffer="", ~code=tail, ~state, ~stack, ~parsedTokens)
-                | (ProcessingWordOrExpression, "", character) when isNumeric(character) => {
-                    innerParseExpression(~buffer=character, ~code=tail, ~state=WaitingTerminateNumber, ~stack, ~parsedTokens)
+                | (ExpectingCloseBracketOrExpression | ProcessingWordOrExpression(_), "", " ") => innerParseExpression(~buffer="", ~code=tail, ~state, ~stack, ~parsedTokens)
+                | (ProcessingWordOrExpression(terminatingTokens), "", character) when isNumeric(character) => {
+                    innerParseExpression(~buffer=character, ~code=tail, ~state=WaitingTerminateNumber(terminatingTokens), ~stack, ~parsedTokens)
                 }
-                | (ProcessingWordOrExpression, "", character) when isAlphabetical(character) => {
-                    innerParseExpression(~buffer=character, ~code=tail, ~state=WaitingTerminateWord, ~stack, ~parsedTokens)
+                | (ProcessingWordOrExpression(terminatingTokens), "", character) when isAlphabetical(character) => {
+                    innerParseExpression(~buffer=character, ~code=tail, ~state=WaitingTerminateWord(terminatingTokens), ~stack, ~parsedTokens)
                 }
                 | (ExpectingCloseBracketOrExpression, "", character) when isNumeric(character) => {
-                    innerParseExpression(~buffer=character, ~code=tail, ~state=WaitingTerminateNumber, ~stack=list{state, ...stack}, ~parsedTokens)
+                    innerParseExpression(~buffer=character, ~code=tail, ~state=WaitingTerminateNumber(Some(list{")"})), ~stack=list{state, ...stack}, ~parsedTokens)
                 }
                 | (ExpectingCloseBracketOrExpression, "", character) when isAlphabetical(character) => {
-                    innerParseExpression(~buffer=character, ~code=tail, ~state=WaitingTerminateWord, ~stack=list{state, ...stack}, ~parsedTokens)
+                    innerParseExpression(~buffer=character, ~code=tail, ~state=WaitingTerminateWord(Some(list{")"})), ~stack=list{state, ...stack}, ~parsedTokens)
                 }
                 | (ExpectingCloseBracketOrExpression, "", character) when isOperator(character) => {
                     Js.log(`OPERATOR(${character})`)
-                    innerParseExpression(~buffer="", ~code=tail, ~state=ProcessingWordOrExpression, ~stack=list{state, ...stack}, ~parsedTokens=list{Operator(character), ...parsedTokens})
+                    innerParseExpression(~buffer="", ~code=tail, ~state=ProcessingWordOrExpression(Some(list{")"})), ~stack=list{state, ...stack}, ~parsedTokens=list{Operator(character), ...parsedTokens})
                 }
                 | (ExpectingCloseBracketOrExpression, "", ")") => {
                     Js.log("CLOSEBRACKET")
                     innerParseExpression(~buffer="", ~code=tail, ~state=stack->Belt.List.headExn, ~stack=stack->Belt.List.tailExn, ~parsedTokens=list{ClosedBracket, ...parsedTokens})
                 }
                 // Termination
-                | (WaitingTerminateNumber, number, character) when Some(character) === terminatingToken => {
+                | (WaitingTerminateNumber(terminatingTokens), number, character) when isTerminatingCharacter(terminatingTokens, character) => {
                     Js.log(`NUMBER(${number})`)
-                    innerParseExpression(~buffer="", ~code=list{}, ~state=stack->Belt.List.headExn, ~stack=stack->Belt.List.tailExn, ~parsedTokens=list{Number(number->Belt.Int.fromString->Belt.Option.getExn), ...parsedTokens})
+                    innerParseExpression(~buffer="", ~code=list{head, ...tail}, ~state=stack->Belt.List.headExn, ~stack=stack->Belt.List.tailExn, ~parsedTokens=list{Number(number->Belt.Int.fromString->Belt.Option.getExn), ...parsedTokens})
                 }
-                | (WaitingTerminateWord, word, character) when Some(character) === terminatingToken => {
+                | (WaitingTerminateWord(terminatingTokens), word, character) when isTerminatingCharacter(terminatingTokens, character) => {
                     Js.log(`WORD(${word})`)
-                    innerParseExpression(~buffer="", ~code=list{}, ~state=stack->Belt.List.headExn, ~stack=stack->Belt.List.tailExn, ~parsedTokens=list{Word(word), ...parsedTokens})
+                    innerParseExpression(~buffer="", ~code=list{head, ...tail}, ~state=stack->Belt.List.headExn, ~stack=stack->Belt.List.tailExn, ~parsedTokens=list{Word(word), ...parsedTokens})
                 }
-                | (ProcessingWordOrExpression, "", character) when Some(character) === terminatingToken => {
-                    innerParseExpression(~buffer="", ~code=list{}, ~state=stack->Belt.List.headExn, ~stack=stack->Belt.List.tailExn, ~parsedTokens)
+                | (ProcessingWordOrExpression(terminatingTokens), "", character) when isTerminatingCharacter(terminatingTokens, character) => {
+                    innerParseExpression(~buffer="", ~code=list{head, ...tail}, ~state=stack->Belt.List.headExn, ~stack=stack->Belt.List.tailExn, ~parsedTokens)
                 }
-                | (ExpectingExpressionEndOrOperator(terminatingToken), "", character) when Some(character) === terminatingToken => {
-                    Js.log(`END`)
+                | (ExpectingExpressionEndOrOperator(terminatingTokens), "", character) when isTerminatingCharacter(terminatingTokens, character) => {
+                    /*Js.log(`END`)
                     Some({
                         tokens: parsedTokens,
                         remainingCode: tail,
-                    })
+                    })*/
+                    /*switch stack->Belt.List.head {
+                        | Some(stackHead) => innerParseExpression(~buffer="", ~code=list{head, ...tail}, ~state=stackHead, ~stack=stack->Belt.List.tail->Belt.Option.getWithDefault(list{}), ~parsedTokens)
+                        | None => Some({
+                            tokens: parsedTokens,
+                            remainingCode: tail,
+                        })
+                    }*/
+                    switch stack->Belt.List.head {
+                        | Some(stackHead) => innerParseExpression(~buffer="", ~code=list{head, ...tail}, ~state=stackHead, ~stack=stack->Belt.List.tail->Belt.Option.getWithDefault(list{}), ~parsedTokens)
+                        | None => {
+                            // innerParseExpression(~buffer="", ~code=tail, ~state=ExpectingExpressionEndOrOperator(terminatingTokens), ~stack, ~parsedTokens)
+                            Some({
+                                tokens: parsedTokens,
+                                remainingCode: tail,
+                            })
+                        }
+                    }
                 }
 
                 // Word Parsing
-                | (WaitingTerminateWord, word, character) => parseWord(word, character, tail, state, stack, parsedTokens)
+                | (WaitingTerminateWord(_), word, character) => parseWord(word, character, tail, state, stack, parsedTokens)
 
                 // Function parsing
                 | (ExpectingCloseBracketOrFunctionArguments, word, character) => parseFunction(word, character, tail, state, stack, parsedTokens)
-                | (WaitingTerminateArgument, word, character) => parseFunction(word, character, tail, state, stack, parsedTokens)
-                | (WaitingTerminateNumberArgument, word, character) => parseFunction(word, character, tail, state, stack, parsedTokens)
 
                 // Number parsing
-                | (WaitingTerminateNumber, word, character) => parseNumber(word, character, tail, state, stack, parsedTokens)
+                | (WaitingTerminateNumber(_), word, character) => parseNumber(word, character, tail, state, stack, parsedTokens)
                 | (WaitingTerminateString, word, character) => parseString(word, character, tail, state, stack, parsedTokens)
 
-                | (ExpectingWord, "", character) when isAlphabetical(character) => {
-                    innerParseExpression(~buffer=character, ~code=tail, ~state=WaitingTerminateWord, ~stack, ~parsedTokens)
+                | (ExpectingWord(terminatingTokens), "", character) when isAlphabetical(character) => {
+                    innerParseExpression(~buffer=character, ~code=tail, ~state=WaitingTerminateWord(terminatingTokens), ~stack, ~parsedTokens)
                 }
-                | (ProcessingWordOrExpression, "", "\"") => {
+                | (ProcessingWordOrExpression(terminatingTokens), "", "\"") => {
                     innerParseExpression(~buffer="", ~code=tail, ~state=WaitingTerminateString, ~stack, ~parsedTokens)
                 }
-                | (ExpectingExpressionEndOrOperator(terminatingToken), "", " ") when terminatingToken !== Some(" ") => innerParseExpression(~buffer="", ~code=tail, ~state=ExpectingExpressionEndOrOperator(terminatingToken), ~stack, ~parsedTokens)
-                | (ExpectingExpressionEndOrOperator(terminatingToken), "", character) when terminatingToken !== Some(character) && isOperator(character) => {
+                | (ExpectingExpressionEndOrOperator(terminatingTokens), "", " ") when !isTerminatingCharacter(terminatingTokens, " ") => innerParseExpression(~buffer="", ~code=tail, ~state=ExpectingExpressionEndOrOperator(terminatingTokens), ~stack, ~parsedTokens)
+                | (ExpectingExpressionEndOrOperator(terminatingTokens), "", character) when !isTerminatingCharacter(terminatingTokens, character) && isOperator(character) => {
                     Js.log(`OPERATOR(${character})`)
-                    innerParseExpression(~buffer="", ~code=tail, ~state=ProcessingWordOrExpression, ~stack=list{state, ...stack}, ~parsedTokens=list{Operator(character), ...parsedTokens})
+                    innerParseExpression(~buffer="", ~code=tail, ~state=ProcessingWordOrExpression(terminatingTokens), ~stack=list{state, ...stack}, ~parsedTokens=list{Operator(character), ...parsedTokens})
                 }
 
                 | _ => {
@@ -377,19 +400,19 @@ let parseExpression = (buffer: string, code: list<string>, terminatingToken: opt
                 }
             }
             | _ => switch (state, buffer) {
-                | (WaitingTerminateNumber, number) => {
+                | (WaitingTerminateNumber(_), number) => {
                     Js.log(`NUMBER(${number})`)
                     innerParseExpression(~buffer="", ~code=list{}, ~state=stack->Belt.List.headExn, ~stack=stack->Belt.List.tailExn, ~parsedTokens=list{Number(number->Belt.Int.fromString->Belt.Option.getExn), ...parsedTokens})
                 }
-                | (WaitingTerminateWord, word) => {
+                | (WaitingTerminateWord(_), word) => {
                     Js.log(`WORD(${word})`)
                     innerParseExpression(~buffer="", ~code=list{}, ~state=stack->Belt.List.headExn, ~stack=stack->Belt.List.tailExn, ~parsedTokens=list{Word(word), ...parsedTokens})
                 }
-                | (ProcessingWordOrExpression, "") => {
+                | (ProcessingWordOrExpression(_), "") => {
                     innerParseExpression(~buffer="", ~code=list{}, ~state=stack->Belt.List.headExn, ~stack=stack->Belt.List.tailExn, ~parsedTokens)
                 }
-                | (ExpectingExpressionEndOrOperator(terminatingToken), "") => {
-                    Js.log(`END`)
+                | (ExpectingExpressionEndOrOperator(terminatingTokens), "") => {
+                    Js.log(`REALEND`)
                     Some({
                         tokens: parsedTokens,
                         remainingCode: list{},
@@ -419,22 +442,22 @@ let parseExpression = (buffer: string, code: list<string>, terminatingToken: opt
         }
     } and parseWord = (buffer: string, currentToken: string, nextTokens: list<string>, state: expressionState, stack: list<expressionState>, parsedTokens: list<parsedToken>) => {
         switch (state, buffer, currentToken) {
-            | (WaitingTerminateWord, word, character) when isAlphanumeric(character) => innerParseExpression(~buffer=word++character, ~code=nextTokens, ~state=WaitingTerminateWord, ~stack, ~parsedTokens)
-            | (WaitingTerminateWord, word, " ") => {
+            | (WaitingTerminateWord(terminatingTokens), word, character) when isAlphanumeric(character) => innerParseExpression(~buffer=word++character, ~code=nextTokens, ~state=WaitingTerminateWord(terminatingTokens), ~stack, ~parsedTokens)
+            | (WaitingTerminateWord(terminatingTokens), word, " ") => {
                 Js.log(`WORD(${word})`)
                 innerParseExpression(~buffer="", ~code=nextTokens, ~state=stack->Belt.List.headExn, ~stack=stack->Belt.List.tailExn, ~parsedTokens=list{Word(word), ...parsedTokens})
             }
-            | (WaitingTerminateWord, word, character) when isOperator(character) => {
+            | (WaitingTerminateWord(terminatingTokens), word, character) when isOperator(character) => {
                 Js.log(`WORD(${word})`)
                 Js.log(`OPERATOR(${character})`)
-                innerParseExpression(~buffer="", ~code=nextTokens, ~state=ProcessingWordOrExpression, ~stack, ~parsedTokens=list{Operator(character), Word(word), ...parsedTokens})
+                innerParseExpression(~buffer="", ~code=nextTokens, ~state=ProcessingWordOrExpression(terminatingTokens), ~stack, ~parsedTokens=list{Operator(character), Word(word), ...parsedTokens})
             }
-            | (WaitingTerminateWord, word, ".") => {
+            | (WaitingTerminateWord(terminatingTokens), word, ".") => {
                 Js.log(`WORD(${word})`)
                 Js.log(`DOT`)
-                innerParseExpression(~buffer="", ~code=nextTokens, ~state=ExpectingWord, ~stack, ~parsedTokens=list{Dot, Word(word), ...parsedTokens})
+                innerParseExpression(~buffer="", ~code=nextTokens, ~state=ExpectingWord(terminatingTokens), ~stack, ~parsedTokens=list{Dot, Word(word), ...parsedTokens})
             }
-            | (WaitingTerminateWord, word, "(") => {
+            | (WaitingTerminateWord(terminatingTokens), word, "(") => {
                 Js.log(`FUNCTION(${word})`)
                 Js.log(`OPENBRACKET`)
                 innerParseExpression(~buffer="", ~code=nextTokens, ~state=ExpectingCloseBracketOrFunctionArguments, ~stack, ~parsedTokens=list{OpenBracket, Function(word), ...parsedTokens})
@@ -448,19 +471,19 @@ let parseExpression = (buffer: string, code: list<string>, terminatingToken: opt
         }
     } and parseNumber = (buffer: string, currentToken: string, nextTokens: list<string>, state: expressionState, stack: list<expressionState>, parsedTokens: list<parsedToken>) => {
         switch (state, buffer, currentToken) {
-            | (WaitingTerminateNumber, word, character) when isNumeric(character) => {
-                innerParseExpression(~buffer=word++character, ~code=nextTokens, ~state=WaitingTerminateNumber, ~stack, ~parsedTokens)
+            | (WaitingTerminateNumber(terminatingTokens), word, character) when isNumeric(character) => {
+                innerParseExpression(~buffer=word++character, ~code=nextTokens, ~state=WaitingTerminateNumber(terminatingTokens), ~stack, ~parsedTokens)
             }
-            | (WaitingTerminateNumber, word, character) when isOperator(character) => {
+            | (WaitingTerminateNumber(terminatingTokens), word, character) when isOperator(character) => {
                 Js.log(`NUMBER(${word})`)
                 Js.log(`OPERATOR(${character})`)
-                innerParseExpression(~buffer="", ~code=nextTokens, ~state=ProcessingWordOrExpression, ~stack, ~parsedTokens=list{Operator(character), Number(word->Belt.Int.fromString->Belt.Option.getExn), ...parsedTokens})
+                innerParseExpression(~buffer="", ~code=nextTokens, ~state=ProcessingWordOrExpression(terminatingTokens), ~stack, ~parsedTokens=list{Operator(character), Number(word->Belt.Int.fromString->Belt.Option.getExn), ...parsedTokens})
             }
-            | (WaitingTerminateNumber, word, " ") => {
+            | (WaitingTerminateNumber(_terminatingTokens), word, " ") => {
                 Js.log(`NUMBER(${word})`)
                 innerParseExpression(~buffer="", ~code=nextTokens, ~state=stack->Belt.List.headExn, ~stack=stack->Belt.List.tailExn, ~parsedTokens=list{Number(word->Belt.Int.fromString->Belt.Option.getExn), ...parsedTokens})
             }
-            | (WaitingTerminateNumber, word, ")") => {
+            | (WaitingTerminateNumber(_terminatingTokens), word, ")") => {
                 Js.log(`NUMBER(${word})`)
                 innerParseExpression(~buffer="", ~code=list{currentToken, ...nextTokens}, ~state=stack->Belt.List.headExn, ~stack=stack->Belt.List.tailExn, ~parsedTokens=list{Number(word->Belt.Int.fromString->Belt.Option.getExn), ...parsedTokens})
             }
@@ -480,33 +503,16 @@ let parseExpression = (buffer: string, code: list<string>, terminatingToken: opt
                 Js.log(`CLOSEBRACKET`)
                 innerParseExpression(~buffer="", ~code=nextTokens, ~state=stack->Belt.List.headExn, ~stack=stack->Belt.List.tailExn, ~parsedTokens=list{ClosedBracket, ...parsedTokens})
             }
+            | (ExpectingCloseBracketOrFunctionArguments, "", ",") => {
+                Js.log(`COMMA`)
+                innerParseExpression(~buffer="", ~code=nextTokens, ~state=ExpectingCloseBracketOrFunctionArguments, ~stack, ~parsedTokens=list{Comma, ...parsedTokens})
+            }
             | (ExpectingCloseBracketOrFunctionArguments, "", character) when isAlphabetical(character) => {
-                innerParseExpression(~buffer=character, ~code=nextTokens, ~state=WaitingTerminateArgument, ~stack=list{state, ...stack}, ~parsedTokens)
+                Js.log(`FUNCTION PARSE EXPRESSION`)
+                innerParseExpression(~buffer="", ~code=list{currentToken, ...nextTokens}, ~state=ExpressionStart(Some(list{",", ")"})), ~stack=list{ExpectingCloseBracketOrFunctionArguments, ...stack}, ~parsedTokens)
             }
             | (ExpectingCloseBracketOrFunctionArguments, "", character) when isNumeric(character) => {
-                innerParseExpression(~buffer=character, ~code=nextTokens, ~state=WaitingTerminateNumberArgument, ~stack=list{state, ...stack}, ~parsedTokens)
-            }
-            | (WaitingTerminateArgument, word, ")") => {
-                Js.log(`LASTARGUMENT(${word})`)
-                innerParseExpression(~buffer="", ~code=list{currentToken, ...nextTokens}, ~state=stack->Belt.List.headExn, ~stack=stack->Belt.List.tailExn, ~parsedTokens=list{LastArgument(word), ...parsedTokens})
-            }
-            | (WaitingTerminateNumberArgument, word, ")") => {
-                Js.log(`LASTNUMBERARGUMENT(${word})`)
-                innerParseExpression(~buffer="", ~code=list{currentToken, ...nextTokens}, ~state=stack->Belt.List.headExn, ~stack=stack->Belt.List.tailExn, ~parsedTokens=list{LastNumberArgument(word->Belt.Int.fromString->Belt.Option.getExn), ...parsedTokens})
-            }
-            | (WaitingTerminateArgument, word, character) when isAlphanumeric(character) => {
-                innerParseExpression(~buffer=word++character, ~code=nextTokens, ~state=WaitingTerminateArgument, ~stack, ~parsedTokens)
-            }
-            | (WaitingTerminateNumberArgument, word, character) when isNumeric(character) => {
-                innerParseExpression(~buffer=word++character, ~code=nextTokens, ~state=WaitingTerminateNumberArgument, ~stack, ~parsedTokens)
-            }
-            | (WaitingTerminateArgument, word, ",") => {
-                Js.log(`ARGUMENT(${word})`)
-                innerParseExpression(~buffer="", ~code=nextTokens, ~state=stack->Belt.List.headExn, ~stack=stack->Belt.List.tailExn, ~parsedTokens=list{Argument(word), ...parsedTokens})
-            }
-            | (WaitingTerminateNumberArgument, word, ",") => {
-                Js.log(`NUMBERARGUMENT(${word})`)
-                innerParseExpression(~buffer="", ~code=nextTokens, ~state=stack->Belt.List.headExn, ~stack=stack->Belt.List.tailExn, ~parsedTokens=list{NumberArgument(word->Belt.Int.fromString->Belt.Option.getExn), ...parsedTokens})
+                innerParseExpression(~buffer="", ~code=list{currentToken, ...nextTokens}, ~state=ExpressionStart(Some(list{",", ")"})), ~stack=list{ExpectingCloseBracketOrFunctionArguments, ...stack}, ~parsedTokens)
             }
             | _ => {
                 Js.log2(`state:`, expressionStateToString(state))
@@ -516,10 +522,21 @@ let parseExpression = (buffer: string, code: list<string>, terminatingToken: opt
             }
         }
     }
-    innerParseExpression(~buffer, ~code, ~state=ExpressionStart(terminatingToken), ~stack=list{}, ~parsedTokens=list{})
+    innerParseExpression(~buffer, ~code, ~state=ExpressionStart(finalTerminatingTokens), ~stack=list{}, ~parsedTokens=list{})
 }
 
-let parsed = (parseExpression("", `"hellothere" + Method.name(5) + "hello" + (a.name.b + (5 / 2)+10) + b.getAge(hello, 123, h12),`->strToTokenList, Some(","))->Belt.Option.getUnsafe).tokens->Belt.List.reverse
+let parsed = (parseExpression("", `"hellothere" + Method.name(5, Person.getAge()) + "hello" + (a.name.b + (5 / 2)+10) + b.getAge(hello, 123, h12) + ; 1 + 1`->strToTokenList, Some(list{";"}))->Belt.Option.getUnsafe).tokens->Belt.List.reverse
+parsed->Belt.List.toArray->Belt.Array.mapU((. token) => switch token {
+    | OpenBracket => "OpenBracket"
+    | ClosedBracket => "ClosedBracket"
+    | Word(word) => `Word(${word})`
+    | Dot => "Dot"
+    | Operator(operator) => `Operator(${operator})`
+    | Number(number) => `Number(${Belt.Int.toString(number)})`
+    | Function(func) => `Function(${func})`
+    | String(str) => `String(${str})`
+    | Comma => "Comma"
+})->Belt.Array.joinWithU(",", (. a) => a)->Js.log
 parsed->Belt.List.reduceU("", (. acc, token) => acc++switch token {
     | OpenBracket => "("
     | ClosedBracket => ")"
@@ -528,9 +545,6 @@ parsed->Belt.List.reduceU("", (. acc, token) => acc++switch token {
     | Operator(operator) => ` ${operator} `
     | Number(number) => Belt.Int.toString(number)
     | Function(func) => func
-    | Argument(arg) => arg++", "
-    | NumberArgument(argNum) => Belt.Int.toString(argNum)++", "
-    | LastArgument(arg) => arg
-    | LastNumberArgument(argNum) => Belt.Int.toString(argNum)
     | String(str) => `"${str}"`
+    | Comma => ", "
 })->Js.log
